@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Cờ Vua Đại Chiến - Phiên Bản Pro</title>
+    <title>Cờ Vua Đại Chiến - Phiên Bản Pro Hoàn Thiện</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
     
     <style>
@@ -47,7 +47,6 @@
         .game-wrapper { width: 480px; max-width: 94vw; margin-bottom: 20px; display: none; }
         #my-board { width: 100%; aspect-ratio: 1/1; border-radius: 8px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
         
-        /* Khung Chat Trong Trận */
         .chat-box {
             background: #23272a; border: 1px solid #34495e; border-radius: 8px; margin-top: 12px; padding: 10px;
             display: flex; flex-direction: column; gap: 8px;
@@ -60,7 +59,6 @@
         .emoji-item { cursor: pointer; transition: transform 0.1s; }
         .emoji-item:hover { transform: scale(1.3); }
 
-        /* Giao Diện Thông Báo Popup */
         .overlay-popup { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 200; justify-content: center; align-items: center; }
         .card-popup { background: #2c3e50; border: 3px solid #f1c40f; border-radius: 12px; width: 85%; max-width: 340px; padding: 22px; text-align: center; }
         .card-title { font-size: 20px; font-weight: bold; margin-bottom: 10px; color: #f1c40f; }
@@ -145,7 +143,7 @@
         </div>
     </div>
 
-    <!-- POPUP 1: Hộp thoại Nhận Lời Mời Chơi (Dành cho người nhận) -->
+    <!-- POPUP 1: Lời Mời Chơi (Dành cho người nhận) -->
     <div class="overlay-popup" id="invite-received-popup">
         <div class="card-popup">
             <div class="card-title">⚔️ LỜI MỜI THÁCH ĐẤU!</div>
@@ -165,7 +163,7 @@
         </div>
     </div>
 
-    <!-- Thanh menu ẩn phụ -->
+    <!-- Thanh menu ẩn AI phụ -->
     <div class="bottom-trigger-bar" id="trigger-bar">
         <button class="menu-toggle-btn" id="open-menu-trigger">🛠️ Chế Độ Đánh Hộ (AI)</button>
     </div>
@@ -198,6 +196,7 @@
         let myUsername = "";
         let scanInterval = null;
         let activeTargetFriend = "";
+        let isScanningQueue = false; // Flag chặn quét chồng chéo
 
         $(document).ready(function() {
             let savedName = localStorage.getItem('chess_p2p_username');
@@ -231,19 +230,17 @@
                 $('#lobby-status').html(`🟢 Trực tuyến! Sẵn sàng nhận lời mời.`);
                 $('#add-friend-zone').show(); $('#friend-zone').show();
                 
-                checkFriendsOnlineStatus();
+                triggerQueueScan();
                 if(scanInterval) clearInterval(scanInterval);
-                scanInterval = setInterval(checkFriendsOnlineStatus, 4000); 
+                scanInterval = setInterval(triggerQueueScan, 6000); // 6 giây kích hoạt chu kỳ quét tuần tự một lần
             });
 
             peer.on('connection', (connection) => {
-                // Nhận tín hiệu kiểm tra trực tuyến định kỳ
                 if (connection.metadata && connection.metadata.intent === 'ping_signal') {
-                    setTimeout(() => { connection.close(); }, 300);
+                    setTimeout(() => { connection.close(); }, 200);
                     return;
                 }
                 
-                // Nhận lời mời thi đấu chính thức
                 if (connection.metadata && connection.metadata.intent === 'invite_request') {
                     tempIncomingConn = connection;
                     activeTargetFriend = connection.metadata.fromName;
@@ -266,10 +263,10 @@
             $('#invite-received-popup').hide();
             if(tempIncomingConn) {
                 conn = tempIncomingConn;
-                conn.answer({ action: 'accept', mode: 'new' });
+                conn.send({ action: 'respond_invite', status: 'accept', mode: 'new' });
                 setupConnectionEvents();
                 myRole = 'black';
-                localStorage.removeItem('saved_chess_fen_' + activeTargetFriend); // Xóa ván cũ
+                localStorage.removeItem('saved_chess_fen_' + activeTargetFriend);
                 game.reset();
                 startMatch();
             }
@@ -279,11 +276,10 @@
             $('#invite-received-popup').hide();
             if(tempIncomingConn) {
                 conn = tempIncomingConn;
-                conn.answer({ action: 'accept', mode: 'continue' });
+                conn.send({ action: 'respond_invite', status: 'accept', mode: 'continue' });
                 setupConnectionEvents();
                 myRole = 'black';
                 
-                // Tải lại bàn cờ cũ nếu có lưu
                 let savedFen = localStorage.getItem('saved_chess_fen_' + activeTargetFriend);
                 if(savedFen) game.load(savedFen);
                 else game.reset();
@@ -295,8 +291,8 @@
         $('#btn-decline-invite').on('click', function() {
             $('#invite-received-popup').hide();
             if(tempIncomingConn) {
-                tempIncomingConn.answer({ action: 'decline' });
-                tempIncomingConn.close();
+                tempIncomingConn.send({ action: 'respond_invite', status: 'decline' });
+                setTimeout(() => { tempIncomingConn.close(); }, 300);
             }
         });
 
@@ -313,7 +309,7 @@
                 localStorage.setItem('chess_friends_list', JSON.stringify(friends));
             }
             $('#friend-username-input').val('');
-            renderFriends(); checkFriendsOnlineStatus();
+            renderFriends(); triggerQueueScan();
         });
 
         function renderFriends() {
@@ -343,24 +339,54 @@
             renderFriends();
         }
 
-        function checkFriendsOnlineStatus() {
-            if(!peer || peer.destroyed) return;
+        // CƠ CHẾ SỬA LỖI CHÍNH: Quét tuần tự (Queue) tránh bị Cloud PeerJS block spam mạng
+        function triggerQueueScan() {
+            if (isScanningQueue || !peer || peer.destroyed) return;
             let friends = JSON.parse(localStorage.getItem('chess_friends_list')) || [];
-            
-            friends.forEach(name => {
+            if (friends.length === 0) return;
+
+            isScanningQueue = true;
+            let index = 0;
+
+            function scanNext() {
+                if (index >= friends.length) {
+                    isScanningQueue = false; // Kết thúc chu kỳ quét hoàn toàn
+                    return;
+                }
+
+                let name = friends[index];
                 let friendId = "chess_user_" + name;
+                let isOnlineDetected = false;
+
                 let ping = peer.connect(friendId, { metadata: { intent: 'ping_signal' } });
-                
+
                 ping.on('open', () => {
+                    isOnlineDetected = true;
                     $(`#status-${name}`).removeClass('status-offline').addClass('status-online').text('🟢 Trực tuyến');
                     if($(`#action-${name} button`).length === 0) {
                         $(`#action-${name}`).html(`<button class="invite-btn" onclick="inviteFriendToPlay('${name}')">➕ Mời chơi</button>`);
                     }
                     ping.close();
+                    index++;
+                    setTimeout(scanNext, 300); // Nghỉ 0.3 giây rồi mới quét người tiếp theo
                 });
-                ping.on('error', () => { resetToOffline(name); });
-                setTimeout(() => { if (ping && !ping.open) { resetToOffline(name); ping.close(); } }, 2000);
-            });
+
+                ping.on('error', () => {
+                    if(!isOnlineDetected) resetToOffline(name);
+                });
+
+                // Xử lý Timeout phòng hờ người đó tắt mạng đột ngột
+                setTimeout(() => {
+                    if (!isOnlineDetected) {
+                        resetToOffline(name);
+                        ping.close();
+                        index++;
+                        scanNext();
+                    }
+                }, 1200);
+            }
+
+            scanNext();
         }
 
         function resetToOffline(name) {
@@ -380,22 +406,24 @@
             conn = peer.connect(targetId, { metadata: { intent: 'invite_request', fromName: currentMe } });
             
             conn.on('data', (data) => {
-                if(data.action === 'accept') {
-                    $('#lobby-status').text(`✅ Đối thủ đã đồng ý!`);
-                    myRole = 'white';
-                    if(data.mode === 'new') {
-                        localStorage.removeItem('saved_chess_fen_' + activeTargetFriend);
-                        game.reset();
-                    } else {
-                        let savedFen = localStorage.getItem('saved_chess_fen_' + activeTargetFriend);
-                        if(savedFen) game.load(savedFen);
-                        else game.reset();
+                if(data.action === 'respond_invite') {
+                    if (data.status === 'accept') {
+                        $('#lobby-status').text(`✅ Đối thủ đã đồng ý!`);
+                        myRole = 'white';
+                        if(data.mode === 'new') {
+                            localStorage.removeItem('saved_chess_fen_' + activeTargetFriend);
+                            game.reset();
+                        } else {
+                            let savedFen = localStorage.getItem('saved_chess_fen_' + activeTargetFriend);
+                            if(savedFen) game.load(savedFen);
+                            else game.reset();
+                        }
+                        setupConnectionEvents();
+                        startMatch();
+                    } else if (data.status === 'decline') {
+                        alert('Đối thủ đã từ chối lời mời chơi!');
+                        location.reload();
                     }
-                    setupConnectionEvents();
-                    startMatch();
-                } else if(data.action === 'decline') {
-                    alert('Đối thủ đã từ chối lời mời chơi!');
-                    location.reload();
                 }
             });
         }
@@ -403,12 +431,12 @@
         // --- KÊNH TRUYỀN DỮ LIỆU TRONG TRẬN ---
         function setupConnectionEvents() {
             conn.on('data', (data) => {
-                if(data.action === 'accept' || data.action === 'decline') return; 
+                if(data.action === 'respond_invite') return; 
                 
                 if (data.type === 'move') {
                     game.move(data.move); 
                     board.position(game.fen(), true);
-                    localStorage.setItem('saved_chess_fen_' + activeTargetFriend, game.fen()); // Lưu trận phòng hờ
+                    localStorage.setItem('saved_chess_fen_' + activeTargetFriend, game.fen());
                     updateStatus(); 
                     setTimeout(() => { checkAndTriggerAutoMove(); }, 400);
                 } else if (data.type === 'chat') {
@@ -418,7 +446,7 @@
                 }
             });
             conn.on('close', () => { 
-                alert('Trận đấu đã kết thúc hoặc đối thủ mất kết nối!'); 
+                alert('Trận đấu kết thúc hoặc đối thủ đã ngắt kết nối!'); 
                 location.reload(); 
             });
         }
@@ -453,13 +481,13 @@
 
         function appendChatMessage(sender, msg, isEmoji) {
             let color = sender === 'Bạn' ? '#3498db' : '#e74c3c';
-            let style = isEmoji ? `font-size: 24px; animation: bounce 0.3s ease;` : '';
+            let style = isEmoji ? `font-size: 24px;` : '';
             $('#chat-messages').append(`<li class="chat-item"><b style="color: ${color}">${sender}:</b> <span style="${style}">${msg}</span></li>`);
             let logs = document.getElementById('chat-messages');
             logs.scrollTop = logs.scrollHeight;
         }
 
-        // --- HỆ THỐNG ĐÁNH HỘ VÀ TRẬN ĐẤU ---
+        // --- HỆ THỐNG ĐÁNH HỘ AI ---
         const pieceValues = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
         function evaluateBoard(chessGame) {
             let total = 0;
@@ -527,7 +555,7 @@
 
         function checkGameEnding() {
             if (!game.game_over()) return;
-            localStorage.removeItem('saved_chess_fen_' + activeTargetFriend); // Kết thúc ván thực sự thì xóa lưu trữ
+            localStorage.removeItem('saved_chess_fen_' + activeTargetFriend); 
             let title = "HÒA CỜ!"; let desc = "Hai bên bất phân thắng bại.";
             if (game.in_checkmate()) { let winner = game.turn() === 'w' ? 'QUÂN ĐEN' : 'QUÂN TRẮNG'; title = `🏆 ${winner} THẮNG!`; desc = "Chiếu bí kết thúc trận đấu."; }
             $('#res-title').text(title); $('#res-desc').text(desc); $('#match-result-popup').css('display', 'flex');
